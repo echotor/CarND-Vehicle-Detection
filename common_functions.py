@@ -4,9 +4,9 @@ from skimage.feature import hog
 
 
 def color_hist(img, nbins=32, bins_range=(0, 256)):
-    first_hist = np.histogram(img[:,:,0], bins=32, range=(0, 256))
-    second_hist = np.histogram(img[:,:,1], bins=32, range=(0, 256))
-    third_hist = np.histogram(img[:,:,2], bins=32, range=(0, 256))
+    first_hist = np.histogram(img[:,:,0], bins=nbins, range=bins_range)
+    second_hist = np.histogram(img[:,:,1], bins=nbins, range=bins_range)
+    third_hist = np.histogram(img[:,:,2], bins=nbins, range=bins_range)
     # Generating bin centers
     bin_edges = first_hist[1]
     bin_centers = (bin_edges[1:]  + bin_edges[0:len(bin_edges)-1])/2
@@ -17,8 +17,7 @@ def color_hist(img, nbins=32, bins_range=(0, 256)):
 
 
 def bin_spatial(img, size=(32, 32)):
-    small_img = cv2.resize(img, size)
-    features = small_img.ravel()
+    features = cv2.resize(img, size).ravel() 
     # Return the feature vector
     return features
 
@@ -26,13 +25,37 @@ def bin_spatial(img, size=(32, 32)):
 def get_hog_features(img, orient, pix_per_cell, cell_per_block, vis=False, feature_vec=True):
     if vis == True:
         # Use skimage.hog() to get both features and a visualization
-        features, hog_image = hog(img, orientations=orient, pixels_per_cell=(pix_per_cell, pix_per_cell), cells_per_block=(cell_per_block, cell_per_block), visualise=vis, feature_vector=feature_vec)
+        features, hog_image = hog(img, orientations=orient, pixels_per_cell=(pix_per_cell, pix_per_cell), cells_per_block=(cell_per_block, cell_per_block), transform_sqrt=True, visualise=vis, feature_vector=feature_vec)
         return features, hog_image
     else:      
         # Use skimage.hog() to get features only
-        features = hog(img, orientations=orient, pixels_per_cell=(pix_per_cell, pix_per_cell), cells_per_block=(cell_per_block, cell_per_block), visualise=vis, feature_vector=feature_vec)
+        features = hog(img, orientations=orient, pixels_per_cell=(pix_per_cell, pix_per_cell), cells_per_block=(cell_per_block, cell_per_block), visualise=vis, transform_sqrt=True, feature_vector=feature_vec)
         return features
 
+def extract_hog_features(img, color_space='RGB', orient=9, pix_per_cell=8, cell_per_block=2, hog_channel=0):
+    # Convert image to new color space (if specified)
+    if 'HSV' == color_space:
+        feature_image = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    elif 'LUV' == color_space:
+        feature_image = cv2.cvtColor(img, cv2.COLOR_BGR2LUV)
+    elif 'HLS' == color_space:
+        feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
+    elif 'YUV' == color_space:
+        feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2YUV)
+    elif 'YCrCb' == color_space:
+        feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2YCrCb)
+    else:
+        feature_image = np.copy(img)
+    if hog_channel == 'ALL':
+        hog_features = []
+        for channel in range(feature_image.shape[2]):
+            hog_features.append(get_hog_features(feature_image[:,:,channel], orient, pix_per_cell, cell_per_block, vis=False, feature_vec=True))
+        hog_features = np.ravel(hog_features)        
+    else:
+        hog_features = get_hog_features(feature_image[:,:,hog_channel], orient, pix_per_cell, cell_per_block, vis=False, feature_vec=True)
+
+    return hog_features
+    
 def combine_img_features(img, color_space='RGB', spatial_size=(32, 32),
                         hist_bins=32, orient=9, 
                         pix_per_cell=8, cell_per_block=2, hog_channel=0,
@@ -79,14 +102,7 @@ def combine_img_features(img, color_space='RGB', spatial_size=(32, 32),
 
 
 def slide_window(img, x_start_stop=[None, None], y_start_stop=[None, None], xy_window=(64, 64), xy_overlap=(0.5, 0.5)):
-    window_list = []
-    # Loop through finding x and y window positions
-    #     Note: you could vectorize this step, but in practice
-    #     you'll be considering windows one by one with your
-    #     classifier, so looping makes sense
-        # Calculate each window position
-        # Append window position to list
-    # Return the list of windows
+    # If x and/or y start/stop positions not defined, set to image size
     if x_start_stop[0] == None:
         x_start_stop[0] = 0
     if x_start_stop[1] == None:
@@ -95,15 +111,32 @@ def slide_window(img, x_start_stop=[None, None], y_start_stop=[None, None], xy_w
         y_start_stop[0] = 0
     if y_start_stop[1] == None:
         y_start_stop[1] = img.shape[0]
-    slide_end_y = y_start_stop[0] + xy_window[1]
-    slide_x_step = np.int(xy_overlap[0] * xy_window[0])
-    slide_y_step = np.int(xy_overlap[1] * xy_window[1])
-    while slide_end_y <= y_start_stop[1]:
-        slide_end_x = x_start_stop[0] + xy_window[0]
-        while slide_end_x <= x_start_stop[1]:
-            window_list.append(((slide_end_x - xy_window[0], slide_end_y - xy_window[1]), (slide_end_x, slide_end_y)))
-            slide_end_x += slide_x_step
-        slide_end_y += slide_y_step
+    # Compute the span of the region to be searched    
+    xspan = x_start_stop[1] - x_start_stop[0]
+    yspan = y_start_stop[1] - y_start_stop[0]
+    # Compute the number of pixels per step in x/y
+    nx_pix_per_step = np.int(xy_window[0]*(1 - xy_overlap[0]))
+    ny_pix_per_step = np.int(xy_window[1]*(1 - xy_overlap[1]))
+    # Compute the number of windows in x/y
+    nx_windows = np.int(xspan/nx_pix_per_step) - 1
+    ny_windows = np.int(yspan/ny_pix_per_step) - 1
+    # Initialize a list to append window positions to
+    window_list = []
+    # Loop through finding x and y window positions
+    # Note: you could vectorize this step, but in practice
+    # you'll be considering windows one by one with your
+    # classifier, so looping makes sense
+    for ys in range(ny_windows):
+        for xs in range(nx_windows):
+            # Calculate window position
+            startx = xs*nx_pix_per_step + x_start_stop[0]
+            endx = startx + xy_window[0]
+            starty = ys*ny_pix_per_step + y_start_stop[0]
+            endy = starty + xy_window[1]
+            
+            # Append window position to list
+            window_list.append(((startx, starty), (endx, endy)))
+    # Return the list of windows
     return window_list
 
 
